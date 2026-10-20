@@ -237,11 +237,20 @@ export const share = (args: string[]) => {
     process.exit(1)
   }
   const auth = installAuthHeader(password)
+  const open = args.includes("--open")
+  let opened = false
+  if (open) {
+    const url = "https://10.11.10.78:8444/"
+    const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open"
+    const argv = process.platform === "win32" ? ["/c", "start", "", url] : [url]
+    opened = spawnSync(opener, argv, { stdio: "ignore" }).status === 0
+  }
   process.stdout.write(
     [
       `shared   https://10.11.10.78:8444/  ->  local engine 127.0.0.1:${port}`,
       `auth     8444 login required (opencode) + upstream ${auth ? "injected" : "NOT injected"}`,
       `tunnel   pid ${child.pid ?? "?"} (ssh -R 127.0.0.1:${SHARE_PORT})`,
+      `browser  ${open ? (opened ? "opened" : "could not open; use the URL") : "not requested"}`, 
       `stop     gm remote unshare`,
       "",
       "Open the URL on the phone, pick the live session from the list, and type into it.",
