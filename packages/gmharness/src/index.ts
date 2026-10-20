@@ -27,8 +27,8 @@ Usage:
   gm status [--short] [--json]
                               tenant, sync age, git state, MCP count
   gm doctor                   run scripts/doctor.sh against this install
-  gm remote [serve|url|status|password]
-                              always-on lab-VM control server for the iOS PWA
+  gm remote [serve|url|status|share|unshare|share-status|password]
+                              lab-VM server, or live-share this session over the tunnel
   gm update                   git pull --ff-only, then re-run install.sh
   gm netprobe|pcap|fwparse|ipcalc|evidence|context|goal [args...]
                               run the matching bin/ws-* utility

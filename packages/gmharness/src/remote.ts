@@ -5,10 +5,12 @@
 // Basic auth (`opencode` + the password in ~/.config/opencode/.remote-password).
 
 import { createConnection } from "node:net"
+import { spawn, spawnSync } from "node:child_process"
+import { hostname } from "node:os"
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { randomBytes } from "node:crypto"
-import { exec } from "./exec"
+import { exec, run } from "./exec"
 import * as paths from "./paths"
 
 export type RemoteConfig = {
@@ -137,12 +139,117 @@ export const password = (args: string[]) => {
   )
 }
 
+const sharePidFile = () => join(paths.stateDir(), "remote-share.pid")
+const SHARE_PORT = 4196
+
+const localEndpoint = () => {
+  const status = run("opencode", ["service", "status"], { capture: true }).stdout.trim()
+  const match = status.match(/https?:\/\/([^:/]+):(\d+)/)
+  return { port: match ? Number(match[2]) : 4096 }
+}
+
+const localPassword = () => {
+  for (const file of [
+    join(paths.home(), ".local", "state", "opencode", "service.json"),
+    join(paths.configDir(), "service.json"),
+  ]) {
+    try {
+      const value = JSON.parse(readFileSync(file, "utf8")).password
+      if (typeof value === "string" && value) return value
+    } catch {
+      // try the next location
+    }
+  }
+  return ""
+}
+
+const killShare = () => {
+  const file = sharePidFile()
+  if (!existsSync(file)) return false
+  const pid = Number(readFileSync(file, "utf8").trim())
+  if (Number.isFinite(pid) && pid > 0) {
+    try { process.kill(pid, "SIGTERM") } catch { /* already gone */ }
+  }
+  try { writeFileSync(file, "") } catch { /* ignore */ }
+  return true
+}
+
+const installAuthHeader = (password: string) => {
+  if (!password) return false
+  const basic = Buffer.from(`opencode:${password}`).toString("base64")
+  const result = spawnSync(
+    "ssh",
+    ["-o", "BatchMode=yes", "lab-root", "tee", "/etc/nginx/pile-local-auth.conf"],
+    { input: `proxy_set_header Authorization "Basic ${basic}";\n`, encoding: "utf8" },
+  )
+  spawnSync("ssh", ["-o", "BatchMode=yes", "lab-root", "nginx -t && systemctl reload nginx"], { stdio: "ignore" })
+  return result.status === 0
+}
+
+export const share = (args: string[]) => {
+  if (hostname() === "debian") {
+    process.stdout.write("You are on the lab VM. Use https://10.11.10.78:8443/ for the VM-hosted harness.\n")
+    return
+  }
+  killShare()
+  const { port } = localEndpoint()
+  const password = localPassword()
+  const child = spawn(
+    "ssh",
+    [
+      "-N",
+      "-o", "BatchMode=yes",
+      "-o", "ExitOnForwardFailure=yes",
+      "-o", "ServerAliveInterval=30",
+      "-o", "ServerAliveCountMax=3",
+      "-R", `127.0.0.1:${SHARE_PORT}:127.0.0.1:${port}`,
+      "lab-fvpn",
+    ],
+    { detached: true, stdio: "ignore" },
+  )
+  child.unref()
+  writeFileSync(sharePidFile(), String(child.pid ?? "") + "\n", { mode: 0o600 })
+  const auth = installAuthHeader(password)
+  process.stdout.write(
+    [
+      `shared   https://10.11.10.78:8444/  ->  local engine 127.0.0.1:${port}`,
+      `auth     ${auth ? "injected by nginx (VPN-only)" : "not injected; the web UI will ask for the local service password"}`,
+      `tunnel   pid ${child.pid ?? "?"} (ssh -R 127.0.0.1:${SHARE_PORT})`,
+      `stop     gm remote unshare`,
+      "",
+      "Open the URL on the phone, pick the live session from the list, and type into it.",
+      "",
+    ].join("\n"),
+  )
+}
+
+export const unshare = () => {
+  const stopped = killShare()
+  process.stdout.write(stopped ? "remote share stopped\n" : "no remote share running\n")
+}
+
+export const shareStatus = () => {
+  const file = sharePidFile()
+  if (!existsSync(file)) {
+    process.stdout.write("down  no local share\n")
+    process.exit(1)
+  }
+  const pid = Number(readFileSync(file, "utf8").trim())
+  let alive = false
+  try { process.kill(pid, 0); alive = true } catch { alive = false }
+  process.stdout.write(`${alive ? "up  " : "down"}  share pid ${pid} -> https://10.11.10.78:8444/\n`)
+  process.exit(alive ? 0 : 1)
+}
+
 export const remote = (args: string[]) => {
   const command = args[0] ?? "url"
   if (command === "serve") return serve(args.slice(1))
   if (command === "url") return showUrl()
   if (command === "status") return status()
   if (command === "password") return password(args.slice(1))
-  process.stderr.write("usage: gm remote [serve|url|status|password [--rotate]]\n")
+  if (command === "share") return share(args.slice(1))
+  if (command === "unshare") return unshare()
+  if (command === "share-status") return shareStatus()
+  process.stderr.write("usage: gm remote [serve|url|status|share|unshare|share-status|password [--rotate]]\n")
   process.exit(2)
 }
