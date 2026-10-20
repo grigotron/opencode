@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@gmharness/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "bin": {
+    "gm": "./bin/gm"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "assets": "bun run script/generate-assets.ts",
+    "build": "bun build src/index.ts --compile --minify --outfile dist/gm",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:"
+  }
+}
