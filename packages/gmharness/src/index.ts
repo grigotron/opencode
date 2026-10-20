@@ -28,6 +28,8 @@ Usage:
                               tenant, sync age, git state, MCP count
   gm doctor                   run scripts/doctor.sh against this install
   gm remote [serve|url|status|share|unshare|share-status|password]
+  gm subagents run|status|resume|tail|stop
+                              durable journaled subagent sessions
                               lab-VM server, or live-share this session over the tunnel
   gm update                   git pull --ff-only, then re-run install.sh
   gm netprobe|pcap|fwparse|ipcalc|evidence|context|goal [args...]
@@ -70,6 +72,7 @@ const main = async () => {
   if (command === "status") return status(argv.slice(1))
   if (command === "doctor") return sync.doctor(argv.slice(1))
   if (command === "remote") return remote.remote(argv.slice(1))
+  if (command === "subagents") return exec("python3", [join(paths.root(), "scripts", "gm_subagents.py"), ...argv.slice(1)], { cwd: paths.root() })
   if (command === "update") return update()
   if ((WS_COMMANDS as readonly string[]).includes(command)) return ws(command, argv.slice(1))
 
