@@ -7,7 +7,7 @@
 import { createConnection } from "node:net"
 import { spawn, spawnSync } from "node:child_process"
 import { hostname } from "node:os"
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { randomBytes } from "node:crypto"
 import { exec, run } from "./exec"
@@ -145,22 +145,38 @@ const SHARE_PORT = 4196
 const localEndpoint = () => {
   const status = run("opencode", ["service", "status"], { capture: true }).stdout.trim()
   const match = status.match(/https?:\/\/([^:/]+):(\d+)/)
+  if (!match) process.stderr.write("gm remote share: could not read `opencode service status`; assuming 4096\n")
   return { port: match ? Number(match[2]) : 4096 }
 }
 
-const localPassword = () => {
-  for (const file of [
-    join(paths.home(), ".local", "state", "opencode", "service.json"),
-    join(paths.configDir(), "service.json"),
-  ]) {
+const localPassword = (port: number) => {
+  const roots = [join(paths.home(), ".local", "state", "opencode"), paths.configDir()]
+  const candidates: { password: string; url?: string }[] = []
+  for (const root of roots) {
+    let files: string[] = []
     try {
-      const value = JSON.parse(readFileSync(file, "utf8")).password
-      if (typeof value === "string" && value) return value
+      files = readdirSync(root).filter((name) => /^service.*\.json$/.test(name)).map((name) => join(root, name))
     } catch {
-      // try the next location
+      continue
+    }
+    for (const file of files) {
+      try {
+        const data = JSON.parse(readFileSync(file, "utf8")) as { password?: string; url?: string }
+        if (typeof data.password === "string" && data.password) {
+          candidates.push({ password: data.password, url: typeof data.url === "string" ? data.url : undefined })
+        }
+      } catch {
+        // try the next file
+      }
     }
   }
-  return ""
+  // Prefer the record that names the running port, then a config entry without a URL.
+  return (
+    candidates.find((item) => item.url?.includes(`:${port}`))?.password ??
+    candidates.find((item) => !item.url)?.password ??
+    candidates[0]?.password ??
+    ""
+  )
 }
 
 const killShare = () => {
@@ -170,7 +186,7 @@ const killShare = () => {
   if (Number.isFinite(pid) && pid > 0) {
     try { process.kill(pid, "SIGTERM") } catch { /* already gone */ }
   }
-  try { writeFileSync(file, "") } catch { /* ignore */ }
+  try { unlinkSync(file) } catch { /* ignore */ }
   return true
 }
 
@@ -182,18 +198,23 @@ const installAuthHeader = (password: string) => {
     ["-o", "BatchMode=yes", "lab-root", "tee", "/etc/nginx/pile-local-auth.conf"],
     { input: `proxy_set_header Authorization "Basic ${basic}";\n`, encoding: "utf8" },
   )
-  spawnSync("ssh", ["-o", "BatchMode=yes", "lab-root", "nginx -t && systemctl reload nginx"], { stdio: "ignore" })
-  return result.status === 0
+  spawnSync("ssh", ["-o", "BatchMode=yes", "lab-root", "chmod 600 /etc/nginx/pile-local-auth.conf"], { stdio: "ignore" })
+  const reload = spawnSync(
+    "ssh",
+    ["-o", "BatchMode=yes", "lab-root", "nginx -t && systemctl reload nginx"],
+    { stdio: "ignore" },
+  )
+  return result.status === 0 && reload.status === 0
 }
 
 export const share = (args: string[]) => {
-  if (hostname() === "debian") {
+  if (hostname() === "debian" || existsSync("/etc/gmharness-vm")) {
     process.stdout.write("You are on the lab VM. Use https://10.11.10.78:8443/ for the VM-hosted harness.\n")
     return
   }
   killShare()
   const { port } = localEndpoint()
-  const password = localPassword()
+  const password = localPassword(port)
   const child = spawn(
     "ssh",
     [
@@ -209,11 +230,17 @@ export const share = (args: string[]) => {
   )
   child.unref()
   writeFileSync(sharePidFile(), String(child.pid ?? "") + "\n", { mode: 0o600 })
+  const ready = run("ssh", ["-o", "BatchMode=yes", "lab-fvpn", "ss -lntn | grep -q 4196"], { capture: true }).status === 0
+  if (!ready) {
+    process.stderr.write("gm remote share: the reverse tunnel did not come up; check `ssh lab-fvpn true`.\n")
+    killShare()
+    process.exit(1)
+  }
   const auth = installAuthHeader(password)
   process.stdout.write(
     [
       `shared   https://10.11.10.78:8444/  ->  local engine 127.0.0.1:${port}`,
-      `auth     ${auth ? "injected by nginx (VPN-only)" : "not injected; the web UI will ask for the local service password"}`,
+      `auth     8444 login required (VM user) + upstream ${auth ? "injected" : "NOT injected"}`,
       `tunnel   pid ${child.pid ?? "?"} (ssh -R 127.0.0.1:${SHARE_PORT})`,
       `stop     gm remote unshare`,
       "",
@@ -236,7 +263,9 @@ export const shareStatus = () => {
   }
   const pid = Number(readFileSync(file, "utf8").trim())
   let alive = false
-  try { process.kill(pid, 0); alive = true } catch { alive = false }
+  if (Number.isFinite(pid) && pid > 0) {
+    try { process.kill(pid, 0); alive = true } catch { alive = false }
+  }
   process.stdout.write(`${alive ? "up  " : "down"}  share pid ${pid} -> https://10.11.10.78:8444/\n`)
   process.exit(alive ? 0 : 1)
 }
