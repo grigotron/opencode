@@ -11,6 +11,7 @@ import * as bootstrap from "./bootstrap"
 import { exec, run, which } from "./exec"
 import * as paths from "./paths"
 import * as sync from "./sync"
+import * as remote from "./remote"
 import * as tenants from "./tenants"
 
 const USAGE = `gm — GMharness: the eFellows AIOps harness on the OpenCode engine
@@ -26,6 +27,8 @@ Usage:
   gm status [--short] [--json]
                               tenant, sync age, git state, MCP count
   gm doctor                   run scripts/doctor.sh against this install
+  gm remote [serve|url|status|password]
+                              always-on lab-VM control server for the iOS PWA
   gm update                   git pull --ff-only, then re-run install.sh
   gm netprobe|pcap|fwparse|ipcalc|evidence|context|goal [args...]
                               run the matching bin/ws-* utility
@@ -66,6 +69,7 @@ const main = async () => {
   if (command === "init") return init(argv.slice(1))
   if (command === "status") return status(argv.slice(1))
   if (command === "doctor") return sync.doctor(argv.slice(1))
+  if (command === "remote") return remote.remote(argv.slice(1))
   if (command === "update") return update()
   if ((WS_COMMANDS as readonly string[]).includes(command)) return ws(command, argv.slice(1))
 

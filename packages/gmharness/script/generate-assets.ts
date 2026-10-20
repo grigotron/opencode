@@ -20,6 +20,7 @@ const files = [
   "AGENTS.md",
   "config/opencode.jsonc",
   "config/.env.example",
+  "config/remote.jsonc",
   "scripts/gm_sync.py",
   "scripts/doctor.sh",
   "scripts/opencode-config-guard",
