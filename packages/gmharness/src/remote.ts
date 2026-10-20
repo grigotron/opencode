@@ -110,10 +110,13 @@ export const status = () => {
     process.stdout.write(`${ok ? "up  " : "down"}  ${url(config)}  ${detail}\n`)
     process.exit(ok ? 0 : 1)
   }
-  const socket = createConnection({ host: config.bind, port: config.port })
+  const target = new URL(url(config))
+  const host = target.hostname
+  const port = Number(target.port || (target.protocol === "https:" ? 443 : 80))
+  const socket = createConnection({ host, port })
   const timer = setTimeout(() => {
     socket.destroy()
-    done(false, "(connect timeout)")
+    done(false, `(connect timeout to ${host}:${port})`)
   }, 1500)
   socket.once("connect", () => {
     clearTimeout(timer)
