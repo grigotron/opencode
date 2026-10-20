@@ -240,7 +240,7 @@ export const share = (args: string[]) => {
   process.stdout.write(
     [
       `shared   https://10.11.10.78:8444/  ->  local engine 127.0.0.1:${port}`,
-      `auth     8444 login required (VM user) + upstream ${auth ? "injected" : "NOT injected"}`,
+      `auth     8444 login required (opencode) + upstream ${auth ? "injected" : "NOT injected"}`,
       `tunnel   pid ${child.pid ?? "?"} (ssh -R 127.0.0.1:${SHARE_PORT})`,
       `stop     gm remote unshare`,
       "",
