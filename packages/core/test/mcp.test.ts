@@ -1078,6 +1078,55 @@ test("reconnects and retries a tool call after the MCP session expires", async (
   )
 })
 
+testEffect(Layer.empty).effect("retries a failed MCP server in the background until it connects", () =>
+  Effect.gen(function* () {
+    let down = true
+    const server = yield* resourceServer({ respond: () => (down ? new Response(null, { status: 503 }) : undefined) })
+    yield* Effect.gen(function* () {
+      const service = yield* Mcp.Service
+      // Each drain moves the TestClock 2s with real macrotasks in between for the HTTP round trips.
+      const reach = (status: string) =>
+        drain.pipe(
+          Effect.andThen(service.servers()),
+          Effect.map((servers) => servers.find((entry) => entry.name === "resources")?.status.status),
+          Effect.repeat({ until: (current) => current === status, times: 600 }),
+        )
+      expect(yield* reach("failed")).toBe("failed")
+      const failedInitializations = server.state.initializations
+
+      // The endpoint recovers (DNS back after a network switch); nothing calls connect().
+      down = false
+      expect(yield* reach("connected")).toBe("connected")
+      expect(server.state.initializations).toBeGreaterThan(failedInitializations)
+      expect((yield* service.tools()).map((tool) => tool.name)).toEqual(["echo"])
+    }).pipe(Effect.provide(resourceMcpLayer(server.url)))
+  }),
+)
+
+test("reconnects a failed MCP server when a tool is called", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        let down = true
+        const server = yield* resourceServer({
+          respond: () => (down ? new Response(null, { status: 503 }) : undefined),
+        })
+        yield* Effect.gen(function* () {
+          const service = yield* Mcp.Service
+          expect((yield* settled(service))?.status).toBe("failed")
+
+          down = false
+          const result = yield* service.callTool({ server: "resources", name: "echo", args: { n: 1 } })
+
+          expect(result.isError).toBe(false)
+          expect(server.state.toolCalls).toHaveLength(1)
+          expect((yield* settled(service))?.status).toBe("connected")
+        }).pipe(Effect.provide(resourceMcpLayer(server.url)))
+      }),
+    ),
+  )
+})
+
 describe.each([
   ["legacy", undefined],
   ["modern", "2026-07-28"],

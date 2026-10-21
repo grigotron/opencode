@@ -86,6 +86,10 @@ type ServerEntry = {
   // Set when a remote server is registered as an OAuth integration; the credential lives in the global store.
   integrationID?: Integration.ID
   registration?: State.Registration
+  // Background reconnect after a failure: consecutive failures drive the backoff, and only the
+  // retry holding the current token may run, so a manual connect or a newer failure supersedes it.
+  failures?: number
+  retry?: symbol
 }
 
 // MCP elicitations are Location-scoped, not Session-scoped: the server cannot attribute them to a
@@ -94,6 +98,9 @@ const GLOBAL_ELICITATION_SESSION_ID = "global"
 const URL_ELICITATION_FIELD_KEY = "elicitation"
 // Connections remain Location-scoped, but shared remote endpoints should not receive concurrent startup bursts.
 const endpointLoads = KeyedMutex.makeUnsafe<string>()
+// A failed server is retried 2s, 4s, 8s, ... after the failure, capped at five minutes.
+const RETRY_BASE_MS = 2_000
+const RETRY_MAX_MS = 300_000
 
 type Data = {
   servers: Map<ServerName, Types.DeepMutable<Mcp.ServerConfig>>
@@ -407,6 +414,7 @@ export const layer = (options?: Options) =>
               entry.status = { status: "failed", error: reason }
               yield* stopServer(name, entry)
               yield* bus.publish(McpEvent.StatusChanged, { server: name })
+              scheduleRetry(name, entry)
             }),
           ),
         )
@@ -457,6 +465,8 @@ export const layer = (options?: Options) =>
             entry.tools = result.value.tools.map((tool) => toTool(name, entry, tool))
             entry.prompts = []
             entry.status = { status: "connected" }
+            entry.failures = 0
+            entry.retry = undefined
             watch(name, entry, result.value.connection)
             yield* Effect.logInfo("mcp connected", { server: name, tools: entry.tools.length })
             // The tool registry reads on this event; a late-connecting server has no other way to appear.
@@ -475,10 +485,32 @@ export const layer = (options?: Options) =>
               : { status: "failed", error: error instanceof Error ? error.message : String(error) }
           yield* Effect.logWarning("mcp connect failed", { server: name, status: entry.status })
           yield* bus.publish(McpEvent.StatusChanged, { server: name })
+          if (entry.status.status === "failed") scheduleRetry(name, entry)
         }).pipe(
           Effect.ensuring(entry.startup.open),
           Effect.annotateLogs({ server: name, directory: location.directory, connectionID: crypto.randomUUID() }),
         )
+
+      // Without this a server that failed on a transient fault (DNS down while the network or VPN
+      // switched, a package registry unreachable for npx/uvx) stays failed for the life of the
+      // long-running service, and every client attached to it sees the stale failure.
+      const scheduleRetry = (name: ServerName, entry: ServerEntry) => {
+        const token = Symbol()
+        const failures = entry.failures ?? 0
+        entry.retry = token
+        entry.failures = failures + 1
+        fork(
+          Effect.sleep(Math.min(RETRY_BASE_MS * 2 ** failures, RETRY_MAX_MS)).pipe(
+            Effect.andThen(
+              Effect.suspend(() =>
+                entries.get(name) === entry && entry.retry === token && entry.status.status === "failed"
+                  ? startServer(name, entry)
+                  : Effect.void,
+              ).pipe(locks.withLock(name)),
+            ),
+          ),
+        )
+      }
 
       const stopServer = Effect.fnUntraced(function* (name: ServerName, entry: ServerEntry) {
         const scope = entry.scope
@@ -669,6 +701,13 @@ export const layer = (options?: Options) =>
         callTool: Effect.fn("MCP.callTool")(function* (input) {
           const target = yield* requireServer(input.server)
           yield* target.entry.startup.await
+          // Reconnect a failed server now rather than make the call wait out the retry backoff.
+          if (!target.entry.client && target.entry.status.status === "failed")
+            yield* Effect.suspend(() =>
+              target.entry.client || target.entry.status.status !== "failed"
+                ? Effect.void
+                : startServer(target.name, target.entry),
+            ).pipe(locks.withLock(target.name))
           if (!target.entry.client)
             return yield* new ToolCallError({
               server: target.name,
