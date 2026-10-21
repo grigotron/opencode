@@ -100,7 +100,7 @@ const launch = async (id: string | undefined, forwarded: string[] = []): Promise
   if (!tenants.isEntitled(entitlement.tenants, id)) tenants.refuse(id)
 
   const tenant = entitlement.tenants.find((entry) => entry.id === id)
-  if (!tenant) tenants.refuse(id)
+  if (!tenant) return tenants.refuse(id)
 
   if (entitlement.degraded) {
     process.stderr.write(`gm: entitlement refresh failed (${entitlement.degraded}); using the cached set\n`)
@@ -110,7 +110,7 @@ const launch = async (id: string | undefined, forwarded: string[] = []): Promise
   tenants.setCurrent(id)
 
   const args = forwarded[0] === "--" ? forwarded.slice(1) : forwarded
-  exec(paths.opencodeBin(), args, { cwd: dir })
+  return exec(paths.opencodeBin(), args, { cwd: dir })
 }
 
 /** Interactive picker: numbered list, empty answer cancels. */
